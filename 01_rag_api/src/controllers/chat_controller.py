@@ -6,6 +6,7 @@ from src.services.history_service import HistoryService
 from src.integrations.impl.openai_embedding_integration import OpenAIEmbeddingIntegration
 from src.integrations.impl.qdrant_integration import QdrantIntegration
 from src.integrations.impl.openai_llm_integration import OpenAILlmIntegration
+from src.integrations.impl.openai_query_expansion_integration import OpenAIQueryExpansionIntegration
 
 async def handle_chat(
     question: str,
@@ -18,6 +19,7 @@ async def handle_chat(
         embedding=OpenAIEmbeddingIntegration(),
         dbVectorial=QdrantIntegration(),
         llm_integration=OpenAILlmIntegration(),
+        query_expansion=OpenAIQueryExpansionIntegration(),
     )
     return await service.chat(question=question, user=user, session_id=session_id)
 
