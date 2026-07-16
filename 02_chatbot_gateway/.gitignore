@@ -1,0 +1,9 @@
+*.pyc
+__pycache__
+venv
+.env
+.venv
+build.sh
+cache
+runLocal.bat
+runLocal.sh
