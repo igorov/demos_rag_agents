@@ -1,13 +1,14 @@
+import json
 import time
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 import uuid
 
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from sqlalchemy.orm import Session
 
-from src.services.tools import get_weather
+from src.services.tools import get_weather, retrieve_documents
 from src.repositories.history_repository import HistoryRepository
 from src.repositories.models.history import History
 from src.utils.environment import (
@@ -21,8 +22,16 @@ logger = get_logger(__name__)
 
 SYSTEM_PROMPT = (
     "Eres un asistente útil y amigable. Responde siempre en español. "
-    "Sé conciso en tus respuestas."
+    "Sé conciso en tus respuestas. "
+    "SIEMPRE que la pregunta trate sobre la academia, sus programas, cursos, "
+    "temarios, precios, duración, requisitos, certificaciones o cualquier "
+    "información institucional, DEBES usar la herramienta retrieve_documents "
+    "para consultar la base de conocimiento antes de responder; no respondas "
+    "esos temas de memoria. Si la herramienta no encuentra información "
+    "relevante, dilo explícitamente en tu respuesta."
 )
+
+RETRIEVER_TOOL_NAME = "retrieve_documents"
 
 class AgentService:
     def __init__(self, db: Session) -> None:
@@ -30,11 +39,13 @@ class AgentService:
         self._llm = ChatOpenAI(model=OPENAI_MODEL, api_key=OPENAI_API_KEY)
         self._agent = create_agent(
             model=self._llm,
-            tools=[get_weather],
+            tools=[get_weather, retrieve_documents],
             system_prompt=SYSTEM_PROMPT,
         )
 
     async def chat(self, question: str, user: str, session_id: Optional[str]) -> dict:
+        logger.info(f"Pregunta entrante de {user}: {question}")
+
         is_new_session = not session_id
         if is_new_session:
             logger.info("Creando nueva sesión")
@@ -61,7 +72,7 @@ class AgentService:
             {"messages": [*history_messages, HumanMessage(content=question)]}
         )
         result = self._parse_agent_response(agent_response)
-        retrieved_contexts = None
+        retrieved_contexts = self._extract_retrieved_contexts(agent_response)
         t_agent = time.perf_counter() - t0
 
         t0 = time.perf_counter()
@@ -74,7 +85,11 @@ class AgentService:
                 input_tokens=result["input_tokens"],
                 output_tokens=result["output_tokens"],
                 user=user,
-                retrieved_contexts=retrieved_contexts,
+                retrieved_contexts=(
+                    json.dumps(retrieved_contexts, ensure_ascii=False)
+                    if retrieved_contexts
+                    else None
+                ),
             )
         )
         t_save = time.perf_counter() - t0
@@ -91,12 +106,24 @@ class AgentService:
             },
         )
 
+        logger.info(f"Respuesta a la pregunta: {result['answer']}")
+
         return {
             "user": user,
             "answer": result["answer"],
             "session_id": session_id,
             "trace_id": trace_id,
         }
+
+    @staticmethod
+    def _extract_retrieved_contexts(agent_response: dict) -> List[Dict[str, Any]]:
+        contexts: List[Dict[str, Any]] = []
+        for message in agent_response.get("messages", []):
+            if isinstance(message, ToolMessage) and message.name == RETRIEVER_TOOL_NAME:
+                artifact = getattr(message, "artifact", None)
+                if artifact:
+                    contexts.extend(artifact)
+        return contexts
 
     @staticmethod
     def _parse_agent_response(agent_response: dict) -> dict:
