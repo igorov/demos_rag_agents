@@ -8,6 +8,8 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langchain_openai import ChatOpenAI
 from sqlalchemy.orm import Session
 
+from src.services.guardrails import build_input_guardrails
+from src.services.guardrails.common import hash_message
 from src.services.tools import LOCAL_TOOLS
 from src.repositories.history_repository import HistoryRepository
 from src.repositories.models.history import History
@@ -20,6 +22,10 @@ from src.utils.environment import (
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Pipeline InputGuardrail (HU SEC-001): se construye una sola vez y se reutiliza
+# en ambas inicializaciones del agente (inicial y tras cargar tools MCP).
+_INPUT_GUARDRAILS = build_input_guardrails()
 
 _neon_context = (
     f"Tienes acceso a una base de datos Neon Postgres. "
@@ -55,6 +61,7 @@ _agent = create_agent(
     model=_llm,
     tools=LOCAL_TOOLS,
     system_prompt=SYSTEM_PROMPT,
+    middleware=_INPUT_GUARDRAILS,
 )
 
 
@@ -65,6 +72,7 @@ def init_agent(tools: list) -> None:
         model=_llm,
         tools=tools,
         system_prompt=SYSTEM_PROMPT,
+        middleware=_INPUT_GUARDRAILS,
     )
     logger.info("Agente reinicializado con %d tool(s): %s", len(tools), [t.name for t in tools])
 
@@ -74,7 +82,14 @@ class AgentService:
         self._repo = HistoryRepository(db)
 
     async def chat(self, question: str, user: str, session_id: Optional[str]) -> dict:
-        logger.info(f"Pregunta entrante de {user}: {question}")
+        # No se loguea la pregunta en texto plano: el InputGuardrail (capas 1-8)
+        # corre dentro de _agent.ainvoke y puede bloquear mensajes con secretos
+        # o PII antes de procesarlos; solo se hashea aquí (criterio de privacidad
+        # de HU_InputGuardrail.md).
+        logger.info(
+            "Pregunta entrante",
+            extra={"user": user, "question_hash": hash_message(question)},
+        )
 
         is_new_session = not session_id
         if is_new_session:
